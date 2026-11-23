@@ -4,7 +4,9 @@ LG Monitor Control for Ubuntu
 
 A small GTK4 / libadwaita front end for ddcutil (DDC/CI), in the spirit of
 LG OnScreen Control on Windows: brightness, contrast, sharpness, color
-temperature, RGB gain, input source, volume, and saved profiles.
+temperature, RGB gain, input source, volume, and saved profiles. The refresh
+rate is set through GNOME's display configuration service (Mutter), since
+DDC/CI can't change it.
 """
 import json
 import os
@@ -20,7 +22,7 @@ try:
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, Gio, GLib, Gtk
 except (ImportError, ValueError):
     sys.exit(
         "GTK 4 / libadwaita bindings are missing.\n"
@@ -94,7 +96,8 @@ def parse_detect(out):
             continue
         if not line[0].isspace():
             m = re.match(r"Display\s+(\d+)", line)
-            cur = {"num": m.group(1), "bus": None, "name": f"Display {m.group(1)}"} if m else None
+            cur = {"num": m.group(1), "bus": None, "name": f"Display {m.group(1)}",
+                   "edid": None, "connector": None} if m else None
             if cur:
                 displays.append(cur)
             continue
@@ -105,8 +108,13 @@ def parse_detect(out):
             m = re.search(r"i2c-(\d+)", s)
             if m:
                 cur["bus"] = m.group(1)
+        elif s.startswith(("DRM connector:", "DRM_connector:")):
+            # "card1-HDMI-A-1" -> "HDMI-1", the name GNOME uses
+            conn = re.sub(r"^card\d+-", "", s.split(":", 1)[1].strip())
+            cur["connector"] = re.sub(r"^HDMI-A-", "HDMI-", conn)
         elif s.startswith("Monitor:"):
             parts = [p.strip() for p in s.split(":", 1)[1].split(":")]
+            cur["edid"] = tuple((parts + ["", "", ""])[:3])
             mfg = "LG" if parts[0] == "GSM" else parts[0]
             model = parts[1] if len(parts) > 1 and parts[1] else ""
             if model.upper().startswith(mfg.upper()):
@@ -174,7 +182,109 @@ def setvcp(bus, code, value):
     return rc == 0, err.strip()
 
 
-def read_monitor_state(bus):
+# --------------------------------------------------------------------------
+# Refresh rate, through GNOME's display configuration service (Mutter)
+# --------------------------------------------------------------------------
+MUTTER = ("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+          "org.gnome.Mutter.DisplayConfig")
+APPLY_TEMPORARY, APPLY_PERSISTENT = 1, 2
+CONFIRM_SECONDS = 15
+
+
+def mutter_call(method, params=None):
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    return bus.call_sync(*MUTTER, method, params, None, Gio.DBusCallFlags.NONE, 10000, None)
+
+
+def mutter_state():
+    """Return (serial, monitors, logical_monitors, properties), or None outside GNOME."""
+    try:
+        return mutter_call("GetCurrentState").unpack()
+    except GLib.Error:
+        return None
+
+
+def find_mutter_monitor(monitors, display):
+    norm = lambda t: tuple((x or "").strip().lower() for x in t)  # noqa: E731
+    by_conn = [m for m in monitors if display.get("connector") and m[0][0] == display["connector"]]
+    by_edid = [m for m in monitors if display.get("edid") and norm(m[0][1:]) == norm(display["edid"])]
+    # Prefer a monitor that matches on both, in case two identical models are connected
+    for m in by_conn:
+        if m in by_edid:
+            return m
+    return (by_edid or by_conn or [None])[0]
+
+
+def format_hz(rate):
+    return f"{rate:.2f}".rstrip("0").rstrip(".") + " Hz"
+
+
+def read_refresh_rates(display):
+    """Return {"connector", "options": [(mode_id, label)], "current": mode_id}, or None.
+
+    Only modes at the current resolution are offered, so changing the refresh
+    rate never changes the resolution or the scale.
+    """
+    state = mutter_state()
+    if not state:
+        return None
+    _, monitors, logical, _ = state
+    mon = find_mutter_monitor(monitors, display)
+    if not mon:
+        return None
+    conn, modes = mon[0][0], mon[1]
+    cur = next((m for m in modes if m[6].get("is-current")), None)
+    if not cur:
+        return None  # the monitor is connected but turned off
+    scale = next((lm[2] for lm in logical if any(c[0] == conn for c in lm[5])), None)
+    vrr = cur[6].get("refresh-rate-mode", "fixed")
+    rates = []
+    for mode_id, w, h, rate, _pref, scales, props in modes:
+        if (w, h) != (cur[1], cur[2]) or props.get("is-interlaced"):
+            continue
+        if props.get("refresh-rate-mode", "fixed") != vrr:
+            continue
+        if scale is not None and not any(abs(s - scale) < 0.01 for s in scales):
+            continue
+        rates.append((rate, mode_id))
+    options, seen = [], set()
+    for rate, mode_id in sorted(rates, reverse=True):
+        label = format_hz(rate)
+        if label not in seen or mode_id == cur[0]:
+            seen.add(label)
+            options.append((mode_id, label))
+    return {"connector": conn, "options": options, "current": cur[0]}
+
+
+def apply_display_mode(connector, mode_id, method):
+    """Switch one monitor to mode_id, keeping everything else as it is."""
+    state = mutter_state()
+    if not state:
+        raise RuntimeError("GNOME's display settings service isn't available")
+    serial, monitors, logical, props = state
+    current = {m[0][0]: next((md[0] for md in m[1] if md[6].get("is-current")), None)
+               for m in monitors}
+    mon_props = {m[0][0]: m[2] for m in monitors}
+    config = []
+    for x, y, scale, transform, primary, mons, _ in logical:
+        out = []
+        for conn, *_ in mons:
+            p, mp = {}, mon_props.get(conn, {})
+            if "is-underscanning" in mp:
+                p["underscanning"] = GLib.Variant("b", mp["is-underscanning"])
+            if "color-mode" in mp:
+                p["color-mode"] = GLib.Variant("u", mp["color-mode"])
+            out.append((conn, mode_id if conn == connector else current[conn], p))
+        config.append((x, y, scale, transform, primary, out))
+    global_props = {}
+    if props.get("supports-changing-layout-mode") and "layout-mode" in props:
+        global_props["layout-mode"] = GLib.Variant("u", props["layout-mode"])
+    mutter_call("ApplyMonitorsConfig", GLib.Variant(
+        "(uua(iiduba(ssa{sv}))a{sv})", (serial, method, config, global_props)))
+
+
+def read_monitor_state(display):
+    bus = display["bus"]
     caps = read_capabilities(bus)
     state = {}
     for code in ALL_CODES:
@@ -187,7 +297,11 @@ def read_monitor_state(bus):
             state[code] = v
         elif code in ALWAYS_TRY:
             state[code] = (None, 100)  # can't read it, but writing usually still works
-    return caps, state
+    try:
+        rates = read_refresh_rates(display)
+    except Exception:  # noqa: BLE001
+        rates = None
+    return caps, state, rates
 
 
 class Writer:
@@ -250,6 +364,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.sliders, self.loading, self.sync_all = {}, False, False
         self.profiles = load_profiles()
         self.writer = Writer(self.on_write_error)
+        self.rate_row, self.rate_info, self.rate_pending = None, None, False
+        try:
+            Gio.bus_get_sync(Gio.BusType.SESSION, None).signal_subscribe(
+                MUTTER[0], MUTTER[2], "MonitorsChanged", MUTTER[1], None,
+                Gio.DBusSignalFlags.NONE, lambda *_: self.reload_refresh_rates())
+        except GLib.Error:
+            pass
 
         self.toasts = Adw.ToastOverlay()
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -322,18 +443,18 @@ class MainWindow(Adw.ApplicationWindow):
     def load_display(self, idx):
         self.current = self.displays[idx]
         self.show_loading(f"Reading settings from {self.current['name']}…")
-        run_bg(read_monitor_state, self.on_state, self.current["bus"])
+        run_bg(read_monitor_state, self.on_state, self.current)
 
     def on_state(self, result):
         if isinstance(result, Exception):
             self.show_error("Couldn't read the monitor", str(result))
             return
-        caps, state = result
-        self.build_content(caps, state)
+        caps, state, rates = result
+        self.build_content(caps, state, rates)
         self.stack.set_visible_child_name("main")
 
     # ---- main page ---------------------------------------------------------
-    def build_content(self, caps, state):
+    def build_content(self, caps, state, rates=None):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.sliders = {}
         self.loading = True
@@ -355,6 +476,16 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(top)
 
         shown = 0
+        self.rate_row = None
+        if rates and rates["options"]:
+            group = Adw.PreferencesGroup(title="Display")
+            self.rate_row = Adw.ComboRow(title="Refresh rate")
+            self.rate_row.connect("notify::selected", self.on_refresh_rate)
+            self.set_refresh_rates(rates)
+            group.add(self.rate_row)
+            box.append(group)
+            shown += 1
+
         for title, items in SECTIONS:
             group, count = Adw.PreferencesGroup(title=title), 0
             for code, label, kind in items:
@@ -411,6 +542,100 @@ class MainWindow(Adw.ApplicationWindow):
         row.set_selected(keys.index(cur))
         row.connect("notify::selected", self.on_choice, code, keys)
         return row
+
+    # ---- refresh rate -------------------------------------------------------
+    def set_refresh_rates(self, info):
+        self.rate_info = info
+        was_loading, self.loading = self.loading, True
+        self.rate_row.set_model(Gtk.StringList.new([label for _, label in info["options"]]))
+        keys = [mode_id for mode_id, _ in info["options"]]
+        if info["current"] in keys:
+            self.rate_row.set_selected(keys.index(info["current"]))
+        self.rate_row.set_sensitive(len(keys) > 1)
+        self.rate_row.set_subtitle("" if len(keys) > 1 else "Only one rate is available "
+                                   "at the current resolution")
+        self.loading = was_loading
+
+    def reload_refresh_rates(self):
+        """Pick up changes made elsewhere, like in GNOME Settings."""
+        if self.rate_row is None or self.rate_pending or self.current is None:
+            return
+        display = self.current
+        run_bg(read_refresh_rates,
+               lambda info: self.rate_row is not None and display is self.current
+               and isinstance(info, dict) and self.set_refresh_rates(info), display)
+
+    def on_refresh_rate(self, row, _pspec):
+        if self.loading or self.rate_pending or not self.rate_info:
+            return
+        info = self.rate_info
+        new_id, label = info["options"][row.get_selected()]
+        old_id = info["current"]
+        if new_id == old_id:
+            return
+        self.rate_pending = True
+        run_bg(lambda: apply_display_mode(info["connector"], new_id, APPLY_TEMPORARY),
+               lambda res: self.confirm_refresh_rate(res, info, new_id, old_id, label))
+
+    def confirm_refresh_rate(self, result, info, new_id, old_id, label):
+        if isinstance(result, Exception):
+            self.rate_pending = False
+            msg = result.message if isinstance(result, GLib.Error) else str(result)
+            self.toast(f"Couldn't change the refresh rate: {msg}")
+            self.set_refresh_rates(info)
+            return
+
+        done = {"value": False}
+        heading = f"Keep {label}?"
+        body = "The refresh rate will go back to the previous setting in {} seconds."
+        remaining = {"n": CONFIRM_SECONDS}
+
+        def finish(keep):
+            if done["value"]:
+                return
+            done["value"] = True
+            if timer["id"]:
+                GLib.source_remove(timer["id"])
+                timer["id"] = None
+
+            def after(res):
+                self.rate_pending = False
+                if isinstance(res, Exception):
+                    self.toast("Couldn't save the refresh rate")
+                elif keep:
+                    self.toast(f"Refresh rate set to {label}")
+                self.reload_refresh_rates()
+
+            mode_id = new_id if keep else old_id
+            run_bg(apply_display_mode, after, info["connector"], mode_id, APPLY_PERSISTENT)
+
+        if hasattr(Adw, "AlertDialog"):
+            dlg = Adw.AlertDialog(heading=heading, body=body.format(CONFIRM_SECONDS))
+        else:
+            dlg = Adw.MessageDialog(transient_for=self, modal=True, heading=heading,
+                                    body=body.format(CONFIRM_SECONDS))
+        dlg.add_response("revert", "Revert")
+        dlg.add_response("keep", "Keep changes")
+        dlg.set_response_appearance("keep", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("keep")
+        dlg.set_close_response("revert")
+        dlg.connect("response", lambda _d, r: finish(r == "keep"))
+
+        def tick():
+            remaining["n"] -= 1
+            if remaining["n"] <= 0:
+                timer["id"] = None  # returning SOURCE_REMOVE ends it
+                finish(False)
+                dlg.close()
+                return GLib.SOURCE_REMOVE
+            dlg.set_body(body.format(remaining["n"]))
+            return GLib.SOURCE_CONTINUE
+
+        timer = {"id": GLib.timeout_add_seconds(1, tick)}
+        if hasattr(Adw, "AlertDialog"):
+            dlg.present(self)
+        else:
+            dlg.present()
 
     # ---- events ------------------------------------------------------------
     def on_monitor_changed(self, row, _pspec):

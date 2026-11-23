@@ -10,6 +10,7 @@ It talks to the monitor over DDC/CI using [ddcutil](https://www.ddcutil.com/). I
 
 ## Features
 
+- **Refresh rate:** pick any refresh rate your monitor supports at its current resolution, with a 15-second "keep or revert" check
 - **Picture:** brightness, contrast, sharpness
 - **Color:** color temperature presets, and red, green and blue gain
 - **Input and audio:** switch inputs (HDMI, DisplayPort, USB-C) and change the volume
@@ -86,6 +87,8 @@ Start the app from a terminal with `lg-monitor-control`. Any errors are printed 
 
 ## Limitations
 
+The refresh rate isn't a DDC/CI setting. The app changes it through GNOME's display settings (the same ones GNOME Settings uses), so this option only appears in a GNOME session.
+
 Features like Screen Split, per-app picture modes and firmware updates come from LG's own software and can't be controlled over DDC/CI.
 
 ## Uninstall
@@ -106,7 +109,7 @@ sudo apt remove ddcutil
 
 ## How it works
 
-The app is a single Python file using GTK 4 and libadwaita. It calls `ddcutil` to read and write standard MCCS (VCP) features: `0x10` brightness, `0x12` contrast, `0x87` sharpness, `0x14` color preset, `0x16`/`0x18`/`0x1A` RGB gain, `0x60` input source and `0x62` volume. Slider changes are sent on a background thread and collapsed, so dragging stays smooth.
+The app is a single Python file using GTK 4 and libadwaita. It calls `ddcutil` to read and write standard MCCS (VCP) features: `0x10` brightness, `0x12` contrast, `0x87` sharpness, `0x14` color preset, `0x16`/`0x18`/`0x1A` RGB gain, `0x60` input source and `0x62` volume. Slider changes are sent on a background thread and collapsed, so dragging stays smooth. The refresh rate list comes from Mutter's `org.gnome.Mutter.DisplayConfig` D-Bus service, matched to the ddcutil display by its connector and EDID.
 
 ## License
 
