@@ -33,7 +33,7 @@ These can't be controlled with this app:
 ## Install
 
 ```bash
-git clone https://github.com/SamiulSourav/lg-monitor-control.git
+git clone https://github.com/SamiulSourav/monitor-control.git
 cd lg-monitor-control
 chmod +x install.sh
 ./install.sh
