@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-LG Monitor Control for Ubuntu
+Monitor Control for Ubuntu
 
-A small GTK4 / libadwaita front end for ddcutil (DDC/CI), in the spirit of
-LG OnScreen Control on Windows: brightness, contrast, sharpness, color
-temperature, RGB gain, input source, volume, and saved profiles. The refresh
-rate is set through GNOME's display configuration service (Mutter), since
-DDC/CI can't change it.
+A small GTK4 / libadwaita front end for ddcutil (DDC/CI), in the spirit of the
+Windows and macOS apps monitor makers ship (LG OnScreen Control, Dell Display
+Manager and the like): brightness, contrast, sharpness, color temperature,
+RGB gain, input source, volume, and saved profiles. Works with any brand.
+The refresh rate is set through GNOME's display configuration service
+(Mutter), since DDC/CI can't change it.
 """
 import json
 import os
@@ -29,9 +30,19 @@ except (ImportError, ValueError):
         "Install them with: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1"
     )
 
-APP_ID = "io.github.lgmonitorcontrol"
-CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "lg-monitor-control")
+APP_ID = "io.github.monitorcontrol"
+CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "monitor-control")
+OLD_CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "lg-monitor-control")  # pre-rename
 PROFILES_FILE = os.path.join(CONFIG_DIR, "profiles.json")
+
+# EDID manufacturer IDs (PNP IDs) of common monitor brands
+MANUFACTURERS = {
+    "ACI": "ASUS", "AUS": "ASUS", "ACR": "Acer", "AOC": "AOC", "BNQ": "BenQ",
+    "DEL": "Dell", "ENC": "EIZO", "GBT": "Gigabyte", "GSM": "LG", "HPN": "HP",
+    "HWP": "HP", "IVM": "iiyama", "LEN": "Lenovo", "MSI": "MSI", "NEC": "NEC",
+    "PHL": "Philips", "SAM": "Samsung", "SHP": "Sharp", "SNY": "Sony",
+    "VSC": "ViewSonic", "XMI": "Xiaomi",
+}
 
 # MCCS VCP feature codes
 BRIGHTNESS, CONTRAST, SHARPNESS = 0x10, 0x12, 0x87
@@ -89,6 +100,19 @@ def ddcutil(*args, timeout=20):
             return 127, "", "ddcutil not found"
 
 
+def monitor_name(mfg_id, model):
+    """Build a readable name like "Dell U2720Q" from an EDID maker ID and model."""
+    brand = MANUFACTURERS.get(mfg_id.upper(), mfg_id)
+    if not model:
+        return brand
+    if model.upper().startswith(brand.upper()):  # "DELL U2720Q", "LG FULL HD"
+        return model
+    first, _, rest = model.partition(" ")
+    if first.upper() == mfg_id.upper() and rest:  # "LEN T27h-20" -> "Lenovo T27h-20"
+        return f"{brand} {rest}"
+    return f"{brand} {model}"
+
+
 def parse_detect(out):
     displays, cur = [], None
     for line in out.splitlines():
@@ -115,12 +139,8 @@ def parse_detect(out):
         elif s.startswith("Monitor:"):
             parts = [p.strip() for p in s.split(":", 1)[1].split(":")]
             cur["edid"] = tuple((parts + ["", "", ""])[:3])
-            mfg = "LG" if parts[0] == "GSM" else parts[0]
-            model = parts[1] if len(parts) > 1 and parts[1] else ""
-            if model.upper().startswith(mfg.upper()):
-                cur["name"] = model
-            else:
-                cur["name"] = f"{mfg} {model}".strip()
+            model = parts[1] if len(parts) > 1 else ""
+            cur["name"] = monitor_name(parts[0], model)
     displays = [d for d in displays if d["bus"]]
     for d in displays:
         d["label"] = f"{d['name']} (display {d['num']})" if len(displays) > 1 else d["name"]
@@ -288,8 +308,8 @@ def read_monitor_state(display):
     caps = read_capabilities(bus)
     state = {}
     for code in ALL_CODES:
-        # Some LG monitors leave brightness/contrast out of their capability list
-        # even though they support them, so always try those two.
+        # Some monitors (several LG models among them) leave brightness/contrast out
+        # of their capability list even though they support them, so always try those two.
         if caps and code not in caps and code not in ALWAYS_TRY:
             continue
         v = getvcp(bus, code)
@@ -340,6 +360,12 @@ def run_bg(fn, callback, *args):
 
 
 def load_profiles():
+    # Profiles saved under the app's old name (LG Monitor Control): move them over once
+    if not os.path.exists(CONFIG_DIR) and os.path.isdir(OLD_CONFIG_DIR):
+        try:
+            os.rename(OLD_CONFIG_DIR, CONFIG_DIR)
+        except OSError:
+            pass
     try:
         with open(PROFILES_FILE) as f:
             return json.load(f)
@@ -358,7 +384,7 @@ def save_profiles(profiles):
 # --------------------------------------------------------------------------
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="LG Monitor Control")
+        super().__init__(application=app, title="Monitor Control")
         self.set_default_size(560, 760)
         self.displays, self.current = [], None
         self.sliders, self.loading, self.sync_all = {}, False, False

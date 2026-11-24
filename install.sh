@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs LG Monitor Control for the current user on Ubuntu.
+# Installs Monitor Control for the current user on Ubuntu.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -14,13 +14,18 @@ getent group i2c >/dev/null || sudo groupadd i2c
 sudo usermod -aG i2c "$USER"
 
 echo "Installing the app…"
-install -Dm755 lg_monitor_control.py "$HOME/.local/bin/lg-monitor-control"
+# Remove the copy installed under the app's old name, LG Monitor Control.
+# Saved profiles are moved over the first time the app starts.
+rm -f "$HOME/.local/bin/lg-monitor-control" \
+      "$HOME/.local/share/applications/lg-monitor-control.desktop"
+
+install -Dm755 monitor_control.py "$HOME/.local/bin/monitor-control"
 mkdir -p "$HOME/.local/share/applications"
-cat > "$HOME/.local/share/applications/lg-monitor-control.desktop" <<EOF
+cat > "$HOME/.local/share/applications/monitor-control.desktop" <<EOF
 [Desktop Entry]
-Name=LG Monitor Control
+Name=Monitor Control
 Comment=Adjust brightness, contrast, color and input on your monitor
-Exec=$HOME/.local/bin/lg-monitor-control
+Exec=$HOME/.local/bin/monitor-control
 Icon=video-display
 Terminal=false
 Type=Application
@@ -30,4 +35,4 @@ EOF
 
 echo
 echo "Done. Log out and back in once so the i2c group takes effect,"
-echo "then open \"LG Monitor Control\" from your app grid."
+echo "then open \"Monitor Control\" from your app grid."

@@ -1,12 +1,12 @@
-# LG Monitor Control for Ubuntu
+# Monitor Control for Ubuntu
 
-Adjust your monitor's brightness, contrast, color and input from the Ubuntu desktop, without digging through the on-screen menu. It's a small, native-looking alternative to LG OnScreen Control, which only runs on Windows and macOS.
+Adjust your monitor's brightness, contrast, color and input from the Ubuntu desktop, without digging through the on-screen menu. It's a small, native-looking alternative to the control apps monitor makers ship only for Windows and macOS, such as LG OnScreen Control or Dell Display Manager.
 
-![LG Monitor Control](screenshot.png)
+![Monitor Control](screenshot.png)
 
-It talks to the monitor over DDC/CI using [ddcutil](https://www.ddcutil.com/). It was built with LG monitors in mind, but it works with most external monitors that support DDC/CI.
+It talks to the monitor over DDC/CI using [ddcutil](https://www.ddcutil.com/), so it works with most external monitors from any brand: LG, Dell, Samsung, ASUS, BenQ, HP, Lenovo, Acer, AOC, Philips, MSI, Gigabyte and others.
 
-> This is an independent project. It is not made by or affiliated with LG Electronics.
+> This is an independent project. It is not made by or affiliated with any monitor manufacturer.
 
 ## Features
 
@@ -22,9 +22,13 @@ The app shows only the controls your monitor supports.
 ## Requirements
 
 - Ubuntu 22.04 or newer (other GNOME-based distros with GTK 4 and libadwaita should work too)
-- An external monitor with **DDC/CI turned on** in its on-screen menu (usually under General)
+- An external monitor with **DDC/CI turned on** in its on-screen menu (usually under General, Setup or System)
 
-Laptop built-in screens don't support DDC/CI, so they can't be controlled with this app.
+These can't be controlled with this app:
+
+- Laptop built-in screens, which don't support DDC/CI
+- Apple displays (Studio Display, Pro Display XDR), which are controlled over USB instead
+- Monitors connected through some docks, DisplayLink adapters or daisy chains (DisplayPort MST), which often don't pass DDC/CI through
 
 ## Install
 
@@ -46,32 +50,34 @@ The installer:
 
 ## Usage
 
-Open **LG Monitor Control** from your app grid, or run `lg-monitor-control` in a terminal.
+Open **Monitor Control** from your app grid, or run `monitor-control` in a terminal.
 
-Profiles are saved in `~/.config/lg-monitor-control/profiles.json`.
+Profiles are saved in `~/.config/monitor-control/profiles.json`.
 
 ## Updating
 
-Download the new `lg_monitor_control.py`, then run:
+Download the new `monitor_control.py`, then run:
 
 ```bash
-install -m755 lg_monitor_control.py ~/.local/bin/lg-monitor-control
+install -m755 monitor_control.py ~/.local/bin/monitor-control
 ```
 
 Your profiles are kept.
+
+If you installed the app back when it was called LG Monitor Control, run `./install.sh` once instead. It removes the old launcher, and your profiles move over the first time the new version starts.
 
 ## Troubleshooting
 
 **"No controllable monitor found"**
 
-- Check that DDC/CI is on in the monitor's on-screen menu.
+- Check that DDC/CI is on in the monitor's on-screen menu. Some brands ship with it off.
 - Make sure you logged out and back in after installing.
 - Run `ddcutil detect` in a terminal. If it doesn't list your monitor, the app can't see it either.
 - On the NVIDIA proprietary driver, DDC/CI can be unreliable. See the [ddcutil NVIDIA notes](https://www.ddcutil.com/nvidia/).
 
 **A slider moves but nothing changes**
 
-Many LG monitors lock brightness and contrast in some modes, such as HDR, Auto Brightness or Smart Energy Saving. Turn those off in the monitor's menu. To check whether the monitor accepts changes at all, run:
+Many monitors lock brightness and contrast in some modes, such as HDR, dynamic contrast, auto brightness or eco/energy-saving modes. Turn those off in the monitor's menu. To check whether the monitor accepts changes at all, run:
 
 ```bash
 ddcutil setvcp 10 30
@@ -79,24 +85,24 @@ ddcutil setvcp 10 30
 
 **Switching input does nothing**
 
-Some LG models use non-standard codes for input switching. The other controls still work on these models.
+Some models, including several LG monitors, use non-standard codes for input switching. The other controls still work on these models.
 
 **Seeing errors**
 
-Start the app from a terminal with `lg-monitor-control`. Any errors are printed there.
+Start the app from a terminal with `monitor-control`. Any errors are printed there.
 
 ## Limitations
 
 The refresh rate isn't a DDC/CI setting. The app changes it through GNOME's display settings (the same ones GNOME Settings uses), so this option only appears in a GNOME session.
 
-Features like Screen Split, per-app picture modes and firmware updates come from LG's own software and can't be controlled over DDC/CI.
+Features that come from a monitor maker's own software, such as screen-splitting layouts, per-app picture modes and firmware updates, can't be controlled over DDC/CI.
 
 ## Uninstall
 
 ```bash
-rm ~/.local/bin/lg-monitor-control
-rm ~/.local/share/applications/lg-monitor-control.desktop
-rm -r ~/.config/lg-monitor-control
+rm ~/.local/bin/monitor-control
+rm ~/.local/share/applications/monitor-control.desktop
+rm -r ~/.config/monitor-control
 ```
 
 Optionally, undo the system changes:
