@@ -14,11 +14,6 @@ getent group i2c >/dev/null || sudo groupadd i2c
 sudo usermod -aG i2c "$USER"
 
 echo "Installing the app…"
-# Remove the copy installed under the app's old name, LG Monitor Control.
-# Saved profiles are moved over the first time the app starts.
-rm -f "$HOME/.local/bin/lg-monitor-control" \
-      "$HOME/.local/share/applications/lg-monitor-control.desktop"
-
 install -Dm755 monitor_control.py "$HOME/.local/bin/monitor-control"
 mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/monitor-control.desktop" <<EOF

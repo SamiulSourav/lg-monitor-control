@@ -34,7 +34,7 @@ These can't be controlled with this app:
 
 ```bash
 git clone https://github.com/SamiulSourav/monitor-control.git
-cd lg-monitor-control
+cd monitor-control
 chmod +x install.sh
 ./install.sh
 ```
@@ -63,8 +63,6 @@ install -m755 monitor_control.py ~/.local/bin/monitor-control
 ```
 
 Your profiles are kept.
-
-If you installed the app back when it was called LG Monitor Control, run `./install.sh` once instead. It removes the old launcher, and your profiles move over the first time the new version starts.
 
 ## Troubleshooting
 

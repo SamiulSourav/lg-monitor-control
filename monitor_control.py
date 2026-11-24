@@ -32,7 +32,6 @@ except (ImportError, ValueError):
 
 APP_ID = "io.github.monitorcontrol"
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "monitor-control")
-OLD_CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "lg-monitor-control")  # pre-rename
 PROFILES_FILE = os.path.join(CONFIG_DIR, "profiles.json")
 
 # EDID manufacturer IDs (PNP IDs) of common monitor brands
@@ -360,12 +359,6 @@ def run_bg(fn, callback, *args):
 
 
 def load_profiles():
-    # Profiles saved under the app's old name (LG Monitor Control): move them over once
-    if not os.path.exists(CONFIG_DIR) and os.path.isdir(OLD_CONFIG_DIR):
-        try:
-            os.rename(OLD_CONFIG_DIR, CONFIG_DIR)
-        except OSError:
-            pass
     try:
         with open(PROFILES_FILE) as f:
             return json.load(f)
