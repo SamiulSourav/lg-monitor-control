@@ -544,11 +544,16 @@ class MainWindow(Adw.ApplicationWindow):
             cur = maxv // 2
         adj = Gtk.Adjustment(value=cur, lower=0, upper=maxv, step_increment=1, page_increment=10)
         scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj, hexpand=True,
-                          draw_value=True, digits=0, value_pos=Gtk.PositionType.RIGHT,
-                          valign=Gtk.Align.CENTER)
-        scale.set_size_request(260, -1)
+                          draw_value=False, valign=Gtk.Align.CENTER)
+        scale.set_size_request(200, -1)
         scale.connect("value-changed", self.on_slider, code)
+        # Shares the slider's adjustment, so a typed number (applied on Enter or
+        # when focus leaves) moves the slider and is written like a drag.
+        spin = Gtk.SpinButton(adjustment=adj, digits=0, numeric=True, width_chars=3,
+                              valign=Gtk.Align.CENTER, tooltip_text=f"0 to {maxv}")
+        spin.update_property([Gtk.AccessibleProperty.LABEL], [label])
         row.add_suffix(scale)
+        row.add_suffix(spin)
         self.sliders[code] = scale
         return row
 
