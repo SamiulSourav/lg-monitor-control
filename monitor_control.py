@@ -5,12 +5,10 @@ Monitor Control for Ubuntu
 A small GTK4 / libadwaita front end for ddcutil (DDC/CI), in the spirit of the
 Windows and macOS apps monitor makers ship (LG OnScreen Control, Dell Display
 Manager and the like): brightness, contrast, sharpness, color temperature,
-RGB gain, input source, volume, and saved profiles. Works with any brand.
+RGB gain, input source and volume. Works with any brand.
 The refresh rate is set through GNOME's display configuration service
 (Mutter), since DDC/CI can't change it.
 """
-import json
-import os
 import re
 import shutil
 import subprocess
@@ -31,8 +29,6 @@ except (ImportError, ValueError):
     )
 
 APP_ID = "io.github.monitorcontrol"
-CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "monitor-control")
-PROFILES_FILE = os.path.join(CONFIG_DIR, "profiles.json")
 
 # EDID manufacturer IDs (PNP IDs) of common monitor brands
 MANUFACTURERS = {
@@ -67,14 +63,17 @@ SECTIONS = [
 ]
 ALL_CODES = [code for _, items in SECTIONS for code, _, _ in items]
 ALWAYS_TRY = (BRIGHTNESS, CONTRAST)
-PROFILE_CODES = [BRIGHTNESS, CONTRAST, SHARPNESS, RED_GAIN, GREEN_GAIN, BLUE_GAIN]
-SHORT_NAMES = {BRIGHTNESS: "Brightness", CONTRAST: "Contrast", SHARPNESS: "Sharpness",
-               RED_GAIN: "R", GREEN_GAIN: "G", BLUE_GAIN: "B"}
+USER_PRESETS = (0x0B, 0x0C, 0x0D)  # MCCS "User 1/2/3" color presets, not offered
+# Many monitors (LG among them) ignore the RGB gains unless they're in a User color
+# preset, so the app switches to User 1, shown as "Custom", on the first color change.
+GAIN_CODES = (RED_GAIN, GREEN_GAIN, BLUE_GAIN)
+CUSTOM_PRESET, CUSTOM_LABEL = 0x0B, "Custom"
+PRESET_SETTLE = 2.5  # seconds a monitor can ignore DDC/CI after changing color preset
 
 # Used when the monitor's capability string doesn't name the options
 FALLBACK_LABELS = {
     COLOR_PRESET: {0x01: "sRGB", 0x04: "5000 K", 0x05: "6500 K", 0x06: "7500 K",
-                   0x08: "9300 K", 0x0B: "User 1", 0x0C: "User 2"},
+                   0x08: "9300 K"},
     INPUT_SOURCE: {0x01: "VGA", 0x03: "DVI", 0x0F: "DisplayPort 1", 0x10: "DisplayPort 2",
                    0x11: "HDMI 1", 0x12: "HDMI 2", 0x1B: "USB-C"},
 }
@@ -342,10 +341,13 @@ class Writer:
             with self.cv:
                 while not self.pending:
                     self.cv.wait()
-                (bus, code), value = self.pending.popitem()
+                bus, code = next(iter(self.pending))  # oldest first, so order is kept
+                value = self.pending.pop((bus, code))
             ok, err = setvcp(bus, code, value)
             if not ok:
                 GLib.idle_add(self.on_error, err or "The monitor didn't accept the change.")
+            if code == COLOR_PRESET:
+                time.sleep(PRESET_SETTLE)  # writes sent meanwhile can be dropped
 
 
 def run_bg(fn, callback, *args):
@@ -358,20 +360,6 @@ def run_bg(fn, callback, *args):
     threading.Thread(target=work, daemon=True).start()
 
 
-def load_profiles():
-    try:
-        with open(PROFILES_FILE) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
-
-
-def save_profiles(profiles):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(PROFILES_FILE, "w") as f:
-        json.dump(profiles, f, indent=2)
-
-
 # --------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------
@@ -381,7 +369,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(560, 760)
         self.displays, self.current = [], None
         self.sliders, self.loading, self.sync_all = {}, False, False
-        self.profiles = load_profiles()
         self.writer = Writer(self.on_write_error)
         self.rate_row, self.rate_info, self.rate_pending = None, None, False
         try:
@@ -477,6 +464,7 @@ class MainWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.sliders = {}
         self.loading = True
+        self.preset_row, self.preset_keys, self.preset_is_custom = None, [], False
 
         top = Adw.PreferencesGroup()
         combo = Adw.ComboRow(title="Monitor",
@@ -530,10 +518,6 @@ class MainWindow(Adw.ApplicationWindow):
                                               "settings that can be changed over DDC/CI.")
             box.append(note)
 
-        self.profiles_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(self.profiles_holder)
-        self.refresh_profiles()
-
         self.clamp.set_child(box)
         self.loading = False
 
@@ -559,12 +543,21 @@ class MainWindow(Adw.ApplicationWindow):
 
     def make_choice(self, code, label, cur, values):
         options = dict(sorted(values.items()))
+        if code == COLOR_PRESET:
+            # Leave out the User presets, but show the current one as "Custom"
+            user = set(USER_PRESETS) | {k for k, v in options.items() if "user" in v.lower()}
+            options = {k: v for k, v in options.items() if k not in user}
+            if cur in user:
+                options[cur] = CUSTOM_LABEL
         if cur not in options:
             options[cur] = f"Current (0x{cur:02X})"
         keys = list(options)
         row = Adw.ComboRow(title=label, model=Gtk.StringList.new([options[k] for k in keys]))
         row.set_selected(keys.index(cur))
         row.connect("notify::selected", self.on_choice, code, keys)
+        if code == COLOR_PRESET:
+            self.preset_row, self.preset_keys = row, keys
+            self.preset_is_custom = cur in user
         return row
 
     # ---- refresh rate -------------------------------------------------------
@@ -673,84 +666,39 @@ class MainWindow(Adw.ApplicationWindow):
             self.writer.set(bus, code, value)
 
     def on_slider(self, scale, code):
-        if not self.loading:
-            self.write_slider(code, int(round(scale.get_value())))
+        if self.loading:
+            return
+        if code in GAIN_CODES:
+            self.switch_to_custom_preset()
+        self.write_slider(code, int(round(scale.get_value())))
+
+    def switch_to_custom_preset(self):
+        """Put the monitor in its User color preset, where the RGB gains take effect.
+        Queued before the gain write, which the writer sends once the monitor settles."""
+        if self.preset_row is None or self.preset_is_custom:
+            return
+        keys, model = self.preset_keys, self.preset_row.get_model()  # keys: on_choice's list
+        labels = [model.get_string(i) for i in range(model.get_n_items())]
+        if CUSTOM_LABEL not in labels:
+            keys.append(CUSTOM_PRESET)
+            model.append(CUSTOM_LABEL)
+            labels.append(CUSTOM_LABEL)
+        idx = labels.index(CUSTOM_LABEL)  # reuse it if the monitor started in User 2 or 3
+        was_loading, self.loading = self.loading, True
+        self.preset_row.set_selected(idx)
+        self.loading = was_loading
+        self.preset_is_custom = True
+        self.writer.set(self.current["bus"], COLOR_PRESET, keys[idx])
+        self.toast("Color temperature set to Custom so red, green and blue apply")
 
     def on_choice(self, row, _pspec, code, keys):
         if self.loading:
             return
         if code == INPUT_SOURCE:
             self.toast("Switching input. This screen may go blank.")
+        if code == COLOR_PRESET:
+            self.preset_is_custom = row.get_model().get_string(row.get_selected()) == CUSTOM_LABEL
         self.writer.set(self.current["bus"], code, keys[row.get_selected()])
-
-    # ---- profiles ----------------------------------------------------------
-    def refresh_profiles(self):
-        child = self.profiles_holder.get_first_child()
-        if child:
-            self.profiles_holder.remove(child)
-
-        group = Adw.PreferencesGroup(
-            title="Profiles",
-            description="Save the current picture settings and bring them back in one click.")
-
-        entry_row = Gtk.ListBoxRow(activatable=False, selectable=False)
-        hb = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
-        entry = Gtk.Entry(placeholder_text="Profile name, like Night", hexpand=True)
-        save = Gtk.Button(label="Save profile")
-        save.add_css_class("suggested-action")
-        save.connect("clicked", lambda *_: self.save_profile(entry))
-        entry.connect("activate", lambda *_: self.save_profile(entry))
-        hb.append(entry)
-        hb.append(save)
-        entry_row.set_child(hb)
-        group.add(entry_row)
-
-        for name, values in self.profiles.items():
-            summary = ", ".join(f"{SHORT_NAMES.get(int(k, 16), k)} {v}" for k, v in values.items())
-            row = Adw.ActionRow(title=GLib.markup_escape_text(name), subtitle=summary)
-            apply_btn = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
-            apply_btn.connect("clicked", lambda _b, n=name: self.apply_profile(n))
-            delete_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
-                                    tooltip_text="Delete profile")
-            delete_btn.add_css_class("flat")
-            delete_btn.connect("clicked", lambda _b, n=name: self.delete_profile(n))
-            row.add_suffix(apply_btn)
-            row.add_suffix(delete_btn)
-            group.add(row)
-
-        self.profiles_holder.append(group)
-
-    def save_profile(self, entry):
-        values = {f"{c:02x}": int(round(self.sliders[c].get_value()))
-                  for c in PROFILE_CODES if c in self.sliders}
-        if not values:
-            self.toast("Nothing to save for this monitor")
-            return
-        name = entry.get_text().strip() or f"Profile {len(self.profiles) + 1}"
-        self.profiles[name] = values
-        save_profiles(self.profiles)
-        self.refresh_profiles()
-        self.toast(f"Saved “{name}”")
-
-    def apply_profile(self, name):
-        values = self.profiles.get(name, {})
-        self.loading = True
-        for k, v in values.items():
-            code = int(k, 16)
-            if code in self.sliders:
-                self.sliders[code].set_value(v)
-        self.loading = False
-        for k, v in values.items():
-            code = int(k, 16)
-            if code in self.sliders:
-                self.write_slider(code, v)
-        self.toast(f"Applied “{name}”")
-
-    def delete_profile(self, name):
-        self.profiles.pop(name, None)
-        save_profiles(self.profiles)
-        self.refresh_profiles()
-        self.toast(f"Deleted “{name}”")
 
 
 class App(Adw.Application):

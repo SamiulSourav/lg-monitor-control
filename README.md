@@ -14,7 +14,6 @@ It talks to the monitor over DDC/CI using [ddcutil](https://www.ddcutil.com/), s
 - **Picture:** brightness, contrast, sharpness
 - **Color:** color temperature presets, and red, green and blue gain
 - **Input and audio:** switch inputs (HDMI, DisplayPort, USB-C) and change the volume
-- **Profiles:** save your current settings as a named profile, like "Night", and apply it in one click
 - **Multiple monitors:** pick which monitor to adjust, or move all of them together
 
 The app shows only the controls your monitor supports.
@@ -52,8 +51,6 @@ The installer:
 
 Open **Monitor Control** from your app grid, or run `monitor-control` in a terminal.
 
-Profiles are saved in `~/.config/monitor-control/profiles.json`.
-
 ## Updating
 
 Download the new `monitor_control.py`, then run:
@@ -61,8 +58,6 @@ Download the new `monitor_control.py`, then run:
 ```bash
 install -m755 monitor_control.py ~/.local/bin/monitor-control
 ```
-
-Your profiles are kept.
 
 ## Troubleshooting
 
